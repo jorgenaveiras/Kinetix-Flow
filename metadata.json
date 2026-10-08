@@ -1,0 +1,6 @@
+{
+  "name": "Kinetix Flow — Generador de Prompts desde Imagen y Video",
+  "description": "Analizador directo de imágenes y videos (5s a 30s) que extrae el prompt preciso, detallado y optimizado para Google Flow incluyendo estilos, iluminación y composición técnica.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
