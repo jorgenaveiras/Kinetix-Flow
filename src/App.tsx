@@ -162,7 +162,6 @@ export default function App() {
   const [isDragging, setIsDragging] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const handleCopy = async (text: string, id: string) => {
     try {
@@ -224,7 +223,7 @@ export default function App() {
         setMetadata(inspected.metadata);
 
         const rawDur = inspected.metadata.duration ?? 0;
-        if (rawDur < 5.0) {
+        if (rawDur > 0 && rawDur < 5.0) {
           setValidationError(
             `El video dura ${rawDur.toFixed(
               1
@@ -281,8 +280,8 @@ export default function App() {
     if (!mediaType || !metadata) return;
 
     if (mediaType === 'video') {
-      const effDur = metadata.effectiveDuration ?? metadata.duration ?? 0;
-      if (effDur < 5.0 || effDur > 30.0) {
+      const effDur = metadata.effectiveDuration ?? metadata.duration;
+      if (effDur != null && (effDur < 5.0 || effDur > 30.0)) {
         setValidationError(
           `El video debe tener una duración de mínimo 5 segundos y máximo 30 segundos (actual: ${effDur.toFixed(
             1
@@ -574,25 +573,22 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Preview Viewport */}
-                <div className="relative rounded-lg overflow-hidden bg-[#0A0B0E] border border-[#262936] aspect-video flex items-center justify-center">
-                  {mediaType === 'video' ? (
-                    <video
-                      ref={videoRef}
-                      src={previewUrl}
-                      controls
-                      playsInline
-                      className="w-full h-full object-contain"
-                    />
-                  ) : (
+                {/* Preview: video is analyzed directly, no player needed */}
+                {mediaType === 'image' ? (
+                  <div className="relative rounded-lg overflow-hidden bg-[#0A0B0E] border border-[#262936] aspect-video flex items-center justify-center">
                     <img
                       src={previewUrl}
                       alt={metadata.fileName}
                       referrerPolicy="no-referrer"
                       className="w-full h-full object-contain"
                     />
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div className="rounded-lg bg-[#0A0B0E] border border-[#262936] px-4 py-3 flex items-center gap-3 text-xs text-[#9499AD]">
+                    <Film className="w-4 h-4 text-[#E2A03F] shrink-0" />
+                    <span>Video cargado. Pulsa Generar Prompt para obtener el análisis.</span>
+                  </div>
+                )}
 
                 {/* Video 5s - 30s Duration Control */}
                 {mediaType === 'video' && (
@@ -662,36 +658,7 @@ export default function App() {
                     )}
 
                     {/* Extracted Keyframes */}
-                    {keyframes.length > 0 && (
-                      <div className="space-y-1.5 pt-1">
-                        <span className="text-xs text-[#9499AD] block">
-                          Fotogramas extraídos para análisis temporal:
-                        </span>
-                        <div className="grid grid-cols-6 gap-1.5">
-                          {keyframes.map((frame, i) => (
-                            <button
-                              key={i}
-                              type="button"
-                              onClick={() => {
-                                if (videoRef.current) {
-                                  videoRef.current.currentTime = frame.timestamp;
-                                }
-                              }}
-                              className="relative rounded overflow-hidden border border-[#262936] hover:border-[#E2A03F] aspect-video bg-[#0A0B0E] cursor-pointer"
-                            >
-                              <img
-                                src={frame.dataUrl}
-                                alt={`${frame.timestamp}s`}
-                                className="w-full h-full object-cover"
-                              />
-                              <span className="absolute bottom-0 inset-x-0 bg-black/75 text-[9px] font-mono-tabular text-[#F4F4F0] text-center">
-                                {frame.timestamp.toFixed(0)}s
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+
                   </div>
                 )}
 

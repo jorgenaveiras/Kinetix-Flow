@@ -270,23 +270,49 @@ export async function inspectAndExtractVideo(file: File): Promise<{
   keyframes: KeyframeItem[];
   metadata: MediaMetadata;
 }> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
+
+    const baseMetadata = (): MediaMetadata => ({
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType: file.type || 'video/mp4',
+      width: 1920,
+      height: 1080,
+      aspectRatio: '16:9',
+      opticalMetrics: DEFAULT_OPTICAL_METRICS,
+    });
+
     const video = document.createElement('video');
-    video.preload = 'metadata';
+    video.preload = 'auto';
     video.muted = true;
+    video.defaultMuted = true;
     video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('muted', '');
+    video.setAttribute('webkit-playsinline', '');
+    video.crossOrigin = 'anonymous';
 
-    video.onloadedmetadata = async () => {
+    let settled = false;
+    let reading = false;
+    let hardTimeout: ReturnType<typeof setTimeout>;
+
+    const finish = (metadata: MediaMetadata) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimeout);
+      resolve({ previewUrl: url, keyframes: [], metadata });
+    };
+
+    const readMetadata = async () => {
+      if (reading || settled) return;
       const duration = Number(video.duration || 0);
-      const width = video.videoWidth || 1920;
-      const height = video.videoHeight || 1080;
+      const width = video.videoWidth || 0;
+      const height = video.videoHeight || 0;
+      if (!Number.isFinite(duration) || duration <= 0 || width <= 0 || height <= 0) return;
 
-      if (!Number.isFinite(duration) || duration <= 0) {
-        URL.revokeObjectURL(url);
-        reject(new Error('No se pudo leer la duración del video.'));
-        return;
-      }
+      reading = true;
+      clearTimeout(hardTimeout);
 
       const trimStart = 0;
       const trimEnd = duration > 30 ? 30 : duration;
@@ -302,92 +328,94 @@ export async function inspectAndExtractVideo(file: File): Promise<{
         opticalMetrics = DEFAULT_OPTICAL_METRICS;
       }
 
-      resolve({
-        previewUrl: url,
-        keyframes: [],
-        metadata: {
-          fileName: file.name,
-          fileSize: file.size,
-          mimeType: file.type || 'video/mp4',
-          width,
-          height,
-          aspectRatio: calculateAspectRatioLabel(width, height),
-          duration,
-          trimStart,
-          trimEnd,
-          effectiveDuration,
-          opticalMetrics,
-        },
+      finish({
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type || 'video/mp4',
+        width,
+        height,
+        aspectRatio: calculateAspectRatioLabel(width, height),
+        duration,
+        trimStart,
+        trimEnd,
+        effectiveDuration,
+        opticalMetrics,
       });
     };
 
-    video.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error('Formato de video no soportado. Usa MP4, WEBM o MOV.'));
-    };
+    // Some mobile codecs/code paths never fire a single reliable event, so listen broadly.
+    ['loadedmetadata', 'loadeddata', 'durationchange', 'canplay', 'canplaythrough'].forEach((evt) =>
+      video.addEventListener(evt, readMetadata)
+    );
+
+    // Last resort: never leave the UI stuck on an endless spinner.
+    hardTimeout = setTimeout(() => finish(baseMetadata()), 6000);
+
+    video.onerror = () => finish(baseMetadata());
 
     video.src = url;
+    try {
+      video.load();
+    } catch {
+      /* ignore */
+    }
   });
 }
 
 // Reads a single frame at `seekSec` and derives optical metrics — no keyframe extraction.
+// Always resolves (falls back to default metrics) so callers never hang on mobile.
 export async function sampleVideoOptics(
   videoUrl: string,
   seekSec: number
 ): Promise<{ opticalMetrics: OpticalMetrics }> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const video = document.createElement('video');
     video.crossOrigin = 'anonymous';
-    video.src = videoUrl;
     video.muted = true;
+    video.defaultMuted = true;
     video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('muted', '');
     video.preload = 'auto';
 
+    const sampleCanvas = document.createElement('canvas');
+    sampleCanvas.width = 64;
+    sampleCanvas.height = 64;
+    const sampleCtx = sampleCanvas.getContext('2d');
+
     let settled = false;
-    const finish = (fn: () => void) => {
+    let hardTimeout: ReturnType<typeof setTimeout>;
+
+    const finish = (opticalMetrics: OpticalMetrics) => {
       if (settled) return;
       settled = true;
-      fn();
+      clearTimeout(hardTimeout);
+      resolve({ opticalMetrics });
     };
 
-    video.onloadeddata = () => {
-      const sampleCanvas = document.createElement('canvas');
-      sampleCanvas.width = 64;
-      sampleCanvas.height = 64;
-      const sampleCtx = sampleCanvas.getContext('2d');
-
-      const readFrame = () => {
-        try {
-          const opticalMetrics = sampleCtx
-            ? analyzeCanvasOptics(sampleCtx, 64, 64)
-            : DEFAULT_OPTICAL_METRICS;
-          finish(() => resolve({ opticalMetrics }));
-        } catch (err) {
-          finish(() => reject(err instanceof Error ? err : new Error('Error al analizar el video.')));
-        }
-      };
-
-      const onSeeked = () => {
-        video.removeEventListener('seeked', onSeeked);
+    const draw = () => {
+      try {
         if (sampleCtx) sampleCtx.drawImage(video, 0, 0, 64, 64);
-        readFrame();
-      };
+        finish(sampleCtx ? analyzeCanvasOptics(sampleCtx, 64, 64) : DEFAULT_OPTICAL_METRICS);
+      } catch {
+        finish(DEFAULT_OPTICAL_METRICS);
+      }
+    };
 
+    const onSeeked = () => {
+      video.removeEventListener('seeked', onSeeked);
+      draw();
+    };
+
+    hardTimeout = setTimeout(() => finish(DEFAULT_OPTICAL_METRICS), 3500);
+
+    video.onloadeddata = () => {
       const target = Math.max(0, seekSec);
       if (Math.abs(video.currentTime - target) < 0.05) {
-        if (sampleCtx) sampleCtx.drawImage(video, 0, 0, 64, 64);
-        readFrame();
+        draw();
         return;
       }
-
       video.addEventListener('seeked', onSeeked);
-      // Safety net: a stuck seek still yields a usable prompt.
-      setTimeout(() => {
-        video.removeEventListener('seeked', onSeeked);
-        if (sampleCtx) sampleCtx.drawImage(video, 0, 0, 64, 64);
-        readFrame();
-      }, 2500);
-
       try {
         video.currentTime = target;
       } catch {
@@ -395,8 +423,14 @@ export async function sampleVideoOptics(
       }
     };
 
-    video.onerror = () =>
-      finish(() => reject(new Error('No se pudo leer el fotograma del video.')));
+    video.onerror = () => finish(DEFAULT_OPTICAL_METRICS);
+
+    video.src = videoUrl;
+    try {
+      video.load();
+    } catch {
+      /* ignore */
+    }
   });
 }
 
