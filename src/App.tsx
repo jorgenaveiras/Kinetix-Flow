@@ -32,6 +32,9 @@ import { analyzeWithGemini } from './utils/geminiClient';
 
 const API_KEY_STORAGE = 'kinetix_gemini_api_key';
 const GEMINI_KEY_URL = 'https://aistudio.google.com/app/apikey';
+const BUILT_IN_GEMINI_KEY = (
+  ((import.meta as any).env?.VITE_GEMINI_API_KEY as string | undefined) || ''
+).trim();
 
 function buildClientFallbackResult(
   mediaType: MediaType,
@@ -178,6 +181,8 @@ export default function App() {
     }
   });
   const [showApiKey, setShowApiKey] = useState<boolean>(false);
+
+  const effectiveApiKey = apiKey.trim() || BUILT_IN_GEMINI_KEY;
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -326,7 +331,7 @@ export default function App() {
     setIsAnalyzing(true);
 
     // Preferred path: analyze content + technique directly with Gemini in the browser.
-    if (apiKey.trim()) {
+    if (effectiveApiKey) {
       try {
         let frames: { base64: string; mimeType: string; timestamp: number }[] | undefined;
         if (mediaType === 'video' && previewUrl) {
@@ -338,7 +343,7 @@ export default function App() {
           frames = await extractAnalysisFrames(previewUrl, start, end, 6);
         }
         const data = await analyzeWithGemini({
-          apiKey: apiKey.trim(),
+          apiKey: effectiveApiKey,
           mediaType,
           metadata,
           imageBase64: mediaType === 'image' ? imageBase64 : undefined,
@@ -809,19 +814,30 @@ export default function App() {
                 </div>
                 <span
                   className={`text-[10px] font-mono-tabular px-2 py-0.5 rounded border ${
-                    apiKey.trim()
+                    effectiveApiKey
                       ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'
                       : 'text-[#9499AD] border-[#262936] bg-[#191C26]'
                   }`}
                 >
-                  {apiKey.trim() ? 'Conectado' : 'Sin clave'}
+                  {effectiveApiKey ? 'Conectado' : 'Sin clave'}
                 </span>
               </div>
               <p className="text-xs text-[#9499AD] leading-relaxed">
-                Añade tu clave de Google Gemini para que la app describa{' '}
-                <strong className="text-[#D5D8E2]">qué sucede</strong> en la imagen o el video
-                (sujeto, acción y entorno) y lo integre en el prompt. Sin clave solo se genera el
-                análisis técnico.
+                {BUILT_IN_GEMINI_KEY ? (
+                  <>
+                    Ya está lista para usar: la app describe{' '}
+                    <strong className="text-[#D5D8E2]">qué sucede</strong> en la imagen o el video
+                    (sujeto, acción y entorno) y lo integra en el prompt. Puedes pegar tu propia
+                    clave para reemplazarla.
+                  </>
+                ) : (
+                  <>
+                    Añade tu clave de Google Gemini para que la app describa{' '}
+                    <strong className="text-[#D5D8E2]">qué sucede</strong> en la imagen o el video
+                    (sujeto, acción y entorno) y lo integre en el prompt. Sin clave solo se genera el
+                    análisis técnico.
+                  </>
+                )}
               </p>
               <div className="flex items-center gap-2">
                 <div className="relative flex-1">
@@ -854,8 +870,9 @@ export default function App() {
                 </a>
               </div>
               <p className="text-[10px] text-[#5A5F72] leading-relaxed">
-                La clave se guarda solo en tu navegador (localStorage) y viaja directamente a
-                Google. Nunca se envía a nuestros servidores.
+                {apiKey.trim()
+                  ? 'Tu clave se guarda solo en tu navegador (localStorage) y viaja directamente a Google. Nunca se envía a nuestros servidores.'
+                  : 'La app usa una clave integrada para el análisis. Las imágenes y videos se envían directamente a Google. Nunca se envían a nuestros servidores.'}
               </p>
             </div>
           </div>
