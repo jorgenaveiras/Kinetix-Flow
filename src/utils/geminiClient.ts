@@ -6,8 +6,9 @@ interface GeminiModel {
 }
 
 const MODELS: GeminiModel[] = [
-  { name: 'gemini-3.5-flash', thinkingBudget: 0 },
   { name: 'gemini-flash-lite-latest' },
+  { name: 'gemini-3.5-flash', thinkingBudget: 0 },
+  { name: 'gemini-3.5-flash-lite' },
 ];
 
 interface FramePart {
