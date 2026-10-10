@@ -17,10 +17,10 @@ import {
 } from 'lucide-react';
 import { AnalysisResult, KeyframeItem, MediaMetadata, MediaType } from './types';
 import {
-  extractVideoKeyframes,
   formatBytes,
   inspectAndExtractVideo,
   processImageFile,
+  sampleVideoOptics,
 } from './utils/mediaProcessor';
 
 function buildClientFallbackResult(
@@ -262,13 +262,13 @@ export default function App() {
     if (effective >= 5.0 && effective <= 30.0) {
       setValidationError(null);
       try {
-        const extracted = await extractVideoKeyframes(previewUrl, clampedStart, finalEnd, 6);
-        setKeyframes(extracted.keyframes);
+        const sampleAt = Number(((clampedStart + finalEnd) / 2).toFixed(2));
+        const sampled = await sampleVideoOptics(previewUrl, sampleAt);
         setMetadata((prev) =>
-          prev ? { ...prev, opticalMetrics: extracted.opticalMetrics } : null
+          prev ? { ...prev, opticalMetrics: sampled.opticalMetrics } : null
         );
       } catch {
-        // Keep current keyframes
+        // Keep current optical metrics
       }
     } else {
       setValidationError(

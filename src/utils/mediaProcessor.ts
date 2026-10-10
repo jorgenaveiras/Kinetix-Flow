@@ -21,6 +21,17 @@ export function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
+export const DEFAULT_OPTICAL_METRICS: OpticalMetrics = {
+  avgLuminance: 110,
+  contrastLevel: 'balanced',
+  colorTempKelvin: 5200,
+  colorTempLabel: '5200K (Luz Natural Balanceada)',
+  saturationLevel: 'natural',
+  depthOfFieldEstimate: 'medium-selective',
+  motionIntensityEstimate: 'smooth-tracking',
+  dominantColors: ['#181A20', '#384152', '#D97706', '#8C96A8', '#F4F4F0'],
+};
+
 export function analyzeCanvasOptics(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -262,7 +273,7 @@ export async function inspectAndExtractVideo(file: File): Promise<{
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const video = document.createElement('video');
-    video.preload = 'auto';
+    video.preload = 'metadata';
     video.muted = true;
     video.playsInline = true;
 
@@ -281,57 +292,33 @@ export async function inspectAndExtractVideo(file: File): Promise<{
       const trimEnd = duration > 30 ? 30 : duration;
       const effectiveDuration = Number((trimEnd - trimStart).toFixed(1));
 
-      if (duration < 5.0) {
-        resolve({
-          previewUrl: url,
-          keyframes: [],
-          metadata: {
-            fileName: file.name,
-            fileSize: file.size,
-            mimeType: file.type || 'video/mp4',
-            width,
-            height,
-            aspectRatio: calculateAspectRatioLabel(width, height),
-            duration,
-            trimStart,
-            trimEnd: duration,
-            effectiveDuration: duration,
-            opticalMetrics: {
-              avgLuminance: 100,
-              contrastLevel: 'balanced',
-              colorTempKelvin: 5000,
-              colorTempLabel: '5000K',
-              saturationLevel: 'natural',
-              depthOfFieldEstimate: 'medium-selective',
-              dominantColors: ['#181A20', '#384152', '#D97706', '#8C96A8', '#F4F4F0'],
-            },
-          },
-        });
-        return;
+      // Sample a single representative frame for color/lighting metrics.
+      const sampleAt = Number(((trimStart + trimEnd) / 2).toFixed(2));
+      let opticalMetrics = DEFAULT_OPTICAL_METRICS;
+      try {
+        const sampled = await sampleVideoOptics(url, sampleAt);
+        opticalMetrics = sampled.opticalMetrics;
+      } catch {
+        opticalMetrics = DEFAULT_OPTICAL_METRICS;
       }
 
-      try {
-        const extracted = await extractVideoKeyframes(url, trimStart, trimEnd, 6);
-        resolve({
-          previewUrl: url,
-          keyframes: extracted.keyframes,
-          metadata: {
-            fileName: file.name,
-            fileSize: file.size,
-            mimeType: file.type || 'video/mp4',
-            width,
-            height,
-            aspectRatio: calculateAspectRatioLabel(width, height),
-            duration,
-            trimStart,
-            trimEnd,
-            effectiveDuration,
-            opticalMetrics: extracted.opticalMetrics,
-          },
-        });
-      } catch (err) {
-        reject(err);
-      }
+      resolve({
+        previewUrl: url,
+        keyframes: [],
+        metadata: {
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type || 'video/mp4',
+          width,
+          height,
+          aspectRatio: calculateAspectRatioLabel(width, height),
+          duration,
+          trimStart,
+          trimEnd,
+          effectiveDuration,
+          opticalMetrics,
+        },
+      });
     };
 
     video.onerror = () => {
@@ -343,118 +330,74 @@ export async function inspectAndExtractVideo(file: File): Promise<{
   });
 }
 
-export async function extractVideoKeyframes(
+// Reads a single frame at `seekSec` and derives optical metrics — no keyframe extraction.
+export async function sampleVideoOptics(
   videoUrl: string,
-  startSec: number,
-  endSec: number,
-  frameCount = 6
-): Promise<{ keyframes: KeyframeItem[]; opticalMetrics: OpticalMetrics }> {
+  seekSec: number
+): Promise<{ opticalMetrics: OpticalMetrics }> {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
     video.crossOrigin = 'anonymous';
     video.src = videoUrl;
     video.muted = true;
     video.playsInline = true;
+    video.preload = 'auto';
 
-    const keyframes: KeyframeItem[] = [];
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
 
-    video.onloadeddata = async () => {
+    video.onloadeddata = () => {
+      const sampleCanvas = document.createElement('canvas');
+      sampleCanvas.width = 64;
+      sampleCanvas.height = 64;
+      const sampleCtx = sampleCanvas.getContext('2d');
+
+      const readFrame = () => {
+        try {
+          const opticalMetrics = sampleCtx
+            ? analyzeCanvasOptics(sampleCtx, 64, 64)
+            : DEFAULT_OPTICAL_METRICS;
+          finish(() => resolve({ opticalMetrics }));
+        } catch (err) {
+          finish(() => reject(err instanceof Error ? err : new Error('Error al analizar el video.')));
+        }
+      };
+
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked);
+        if (sampleCtx) sampleCtx.drawImage(video, 0, 0, 64, 64);
+        readFrame();
+      };
+
+      const target = Math.max(0, seekSec);
+      if (Math.abs(video.currentTime - target) < 0.05) {
+        if (sampleCtx) sampleCtx.drawImage(video, 0, 0, 64, 64);
+        readFrame();
+        return;
+      }
+
+      video.addEventListener('seeked', onSeeked);
+      // Safety net: a stuck seek still yields a usable prompt.
+      setTimeout(() => {
+        video.removeEventListener('seeked', onSeeked);
+        if (sampleCtx) sampleCtx.drawImage(video, 0, 0, 64, 64);
+        readFrame();
+      }, 2500);
+
       try {
-        const width = video.videoWidth || 1280;
-        const height = video.videoHeight || 720;
-        const maxDim = 768;
-        const scale = Math.min(1, maxDim / Math.max(width, height));
-        const targetW = Math.max(1, Math.round(width * scale));
-        const targetH = Math.max(1, Math.round(height * scale));
-
-        const canvas = document.createElement('canvas');
-        canvas.width = targetW;
-        canvas.height = targetH;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) throw new Error('Error al inicializar canvas de video.');
-
-        const span = Math.max(1, endSec - startSec);
-        const timestamps: number[] = [];
-        for (let i = 0; i < frameCount; i++) {
-          const t = startSec + (span * i) / Math.max(1, frameCount - 1);
-          timestamps.push(Math.min(endSec - 0.05, Math.max(0, Number(t.toFixed(1)))));
-        }
-
-        let opticalMetrics: OpticalMetrics | null = null;
-        let prevFrameSample: Uint8ClampedArray | null = null;
-        let totalFrameDiff = 0;
-
-        const sampleCanvas = document.createElement('canvas');
-        sampleCanvas.width = 64;
-        sampleCanvas.height = 64;
-        const sampleCtx = sampleCanvas.getContext('2d');
-
-        for (let i = 0; i < timestamps.length; i++) {
-          const t = timestamps[i];
-          await new Promise<void>((resSeek) => {
-            const timeout = setTimeout(resSeek, 1200);
-            const onSeeked = () => {
-              clearTimeout(timeout);
-              video.removeEventListener('seeked', onSeeked);
-              resSeek();
-            };
-            video.addEventListener('seeked', onSeeked);
-            video.currentTime = t;
-          });
-
-          ctx.drawImage(video, 0, 0, targetW, targetH);
-
-          if (sampleCtx) {
-            sampleCtx.drawImage(video, 0, 0, 64, 64);
-            const currentData = sampleCtx.getImageData(0, 0, 64, 64).data;
-            if (prevFrameSample) {
-              let diff = 0;
-              for (let p = 0; p < currentData.length; p += 16) {
-                diff += Math.abs(currentData[p] - prevFrameSample[p]);
-              }
-              totalFrameDiff += diff / (currentData.length / 16);
-            }
-            prevFrameSample = new Uint8ClampedArray(currentData);
-
-            if (i === Math.floor(timestamps.length / 2)) {
-              opticalMetrics = analyzeCanvasOptics(sampleCtx, 64, 64);
-            }
-          }
-
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
-          const base64 = dataUrl.split(',')[1] || '';
-          keyframes.push({
-            timestamp: t,
-            dataUrl,
-            base64,
-            mimeType: 'image/jpeg',
-          });
-        }
-
-        const avgMotionDiff = frameCount > 1 ? totalFrameDiff / (frameCount - 1) : 10;
-        let motionIntensityEstimate: OpticalMetrics['motionIntensityEstimate'] = 'smooth-tracking';
-        if (avgMotionDiff < 8) motionIntensityEstimate = 'static-subtle';
-        else if (avgMotionDiff > 24) motionIntensityEstimate = 'dynamic-action';
-
-        const finalMetrics: OpticalMetrics = opticalMetrics
-          ? { ...opticalMetrics, motionIntensityEstimate }
-          : {
-              avgLuminance: 110,
-              contrastLevel: 'balanced',
-              colorTempKelvin: 5200,
-              colorTempLabel: '5200K (Luz Natural Balanceada)',
-              saturationLevel: 'natural',
-              depthOfFieldEstimate: 'medium-selective',
-              motionIntensityEstimate,
-              dominantColors: ['#181A20', '#384152', '#D97706', '#8C96A8', '#F4F4F0'],
-            };
-
-        resolve({ keyframes, opticalMetrics: finalMetrics });
-      } catch (err) {
-        reject(err);
+        video.currentTime = target;
+      } catch {
+        onSeeked();
       }
     };
 
-    video.onerror = () => reject(new Error('No se pudieron extraer los fotogramas del video.'));
+    video.onerror = () =>
+      finish(() => reject(new Error('No se pudo leer el fotograma del video.')));
   });
 }
+
+
