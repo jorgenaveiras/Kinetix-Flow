@@ -32,8 +32,17 @@ export interface MediaMetadata {
   opticalMetrics: OpticalMetrics;
 }
 
+export interface SceneContent {
+  descriptionEs: string;
+  descriptionEn: string;
+  subjects: string[];
+  action: string;
+  setting: string;
+}
+
 export interface AnalysisResult {
   title: string;
+  content?: SceneContent;
   promptGoogleFlowEs: string;
   promptGoogleFlowEn: string;
   negativePrompt: string;

@@ -434,4 +434,110 @@ export async function sampleVideoOptics(
   });
 }
 
+// Samples a handful of low-resolution frames across [startSec, endSec] so a vision
+// model can describe WHAT HAPPENS over time. Always resolves (never hangs).
+export async function extractAnalysisFrames(
+  videoUrl: string,
+  startSec: number,
+  endSec: number,
+  count = 6
+): Promise<{ base64: string; mimeType: string; timestamp: number }[]> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    video.crossOrigin = 'anonymous';
+    video.muted = true;
+    video.defaultMuted = true;
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('muted', '');
+    video.preload = 'auto';
+
+    const frames: { base64: string; mimeType: string; timestamp: number }[] = [];
+
+    const safeStart = Math.max(0, startSec || 0);
+    const safeEnd = endSec && endSec > safeStart ? endSec : safeStart + 10;
+    const span = Math.max(0.2, safeEnd - safeStart);
+    const n = Math.max(2, Math.min(count, 8));
+    const targets: number[] = [];
+    for (let i = 0; i < n; i += 1) {
+      targets.push(Number((safeStart + (span * (i + 0.5)) / n).toFixed(2)));
+    }
+
+    const maxW = 448;
+
+    let settled = false;
+    let hardTimeout: ReturnType<typeof setTimeout>;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimeout);
+      resolve(frames);
+    };
+    hardTimeout = setTimeout(done, 15000);
+
+    const grab = (timestamp: number) => {
+      try {
+        const vw = video.videoWidth || maxW;
+        const vh = video.videoHeight || Math.round(maxW * 0.5625);
+        const scale = Math.min(1, maxW / vw);
+        const w = Math.max(1, Math.round(vw * scale));
+        const h = Math.max(1, Math.round(vh * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(video, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+        const base64 = dataUrl.split(',')[1] || '';
+        if (base64) frames.push({ base64, mimeType: 'image/jpeg', timestamp });
+      } catch {
+        /* skip frame */
+      }
+    };
+
+    let idx = 0;
+    const seekNext = () => {
+      if (settled) return;
+      if (idx >= targets.length) {
+        done();
+        return;
+      }
+      const target = targets[idx];
+      idx += 1;
+      let handled = false;
+      let guard: ReturnType<typeof setTimeout>;
+      const process = () => {
+        if (handled) return;
+        handled = true;
+        clearTimeout(guard);
+        video.removeEventListener('seeked', onSeeked);
+        grab(target);
+        seekNext();
+      };
+      const onSeeked = () => process();
+      guard = setTimeout(process, 2500);
+      video.addEventListener('seeked', onSeeked);
+      try {
+        video.currentTime = target;
+      } catch {
+        process();
+      }
+    };
+
+    video.onloadeddata = () => {
+      grab(Number(safeStart.toFixed(2)));
+      seekNext();
+    };
+    video.onerror = () => done();
+
+    video.src = videoUrl;
+    try {
+      video.load();
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
 

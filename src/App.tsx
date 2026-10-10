@@ -14,14 +14,24 @@ import {
   Sun,
   Palette,
   RotateCcw,
+  KeyRound,
+  Eye,
+  EyeOff,
+  ExternalLink,
+  ScanText,
 } from 'lucide-react';
 import { AnalysisResult, KeyframeItem, MediaMetadata, MediaType } from './types';
 import {
+  extractAnalysisFrames,
   formatBytes,
   inspectAndExtractVideo,
   processImageFile,
   sampleVideoOptics,
 } from './utils/mediaProcessor';
+import { analyzeWithGemini } from './utils/geminiClient';
+
+const API_KEY_STORAGE = 'kinetix_gemini_api_key';
+const GEMINI_KEY_URL = 'https://aistudio.google.com/app/apikey';
 
 function buildClientFallbackResult(
   mediaType: MediaType,
@@ -160,8 +170,29 @@ export default function App() {
   const [promptLang, setPromptLang] = useState<'es' | 'en'>('es');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [apiKey, setApiKey] = useState<string>(() => {
+    try {
+      return localStorage.getItem(API_KEY_STORAGE) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [showApiKey, setShowApiKey] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleApiKeyChange = (value: string) => {
+    setApiKey(value);
+    try {
+      if (value.trim()) {
+        localStorage.setItem(API_KEY_STORAGE, value.trim());
+      } else {
+        localStorage.removeItem(API_KEY_STORAGE);
+      }
+    } catch {
+      /* localStorage unavailable */
+    }
+  };
 
   const handleCopy = async (text: string, id: string) => {
     try {
@@ -294,6 +325,41 @@ export default function App() {
     setValidationError(null);
     setIsAnalyzing(true);
 
+    // Preferred path: analyze content + technique directly with Gemini in the browser.
+    if (apiKey.trim()) {
+      try {
+        let frames: { base64: string; mimeType: string; timestamp: number }[] | undefined;
+        if (mediaType === 'video' && previewUrl) {
+          const start = metadata.trimStart ?? 0;
+          const end =
+            metadata.trimEnd ??
+            metadata.duration ??
+            (start > 0 ? start + 10 : Number(metadata.effectiveDuration ?? 10) || 10);
+          frames = await extractAnalysisFrames(previewUrl, start, end, 6);
+        }
+        const data = await analyzeWithGemini({
+          apiKey: apiKey.trim(),
+          mediaType,
+          metadata,
+          imageBase64: mediaType === 'image' ? imageBase64 : undefined,
+          imageMimeType: 'image/jpeg',
+          frames,
+        });
+        setAnalysisResult(data);
+        setIsAnalyzing(false);
+        return;
+      } catch (err) {
+        setValidationError(
+          `${
+            err instanceof Error ? err.message : 'Error al analizar con Gemini.'
+          } Se muestra el análisis técnico sin descripción de contenido.`
+        );
+        setAnalysisResult(buildClientFallbackResult(mediaType, metadata));
+        setIsAnalyzing(false);
+        return;
+      }
+    }
+
     try {
       const response = await fetch('/api/analyze', {
         method: 'POST',
@@ -354,6 +420,18 @@ export default function App() {
       `PROMPT NEGATIVO RECOMENDADO:`,
       analysisResult.negativePrompt,
       ``,
+      ...(analysisResult.content
+        ? [
+            `00. CONTENIDO Y ACCIÓN (QUÉ SUCEDE):`,
+            `- Descripción: ${analysisResult.content.descriptionEs}`,
+            ...(analysisResult.content.subjects.length
+              ? [`- Sujetos: ${analysisResult.content.subjects.join(', ')}`]
+              : []),
+            `- Acción: ${analysisResult.content.action}`,
+            `- Entorno: ${analysisResult.content.setting}`,
+            ``,
+          ]
+        : []),
       `01. ESTILOS VISUALES:`,
       `- Estilo Principal: ${analysisResult.styles.mainStyle}`,
       `- Color y Textura: ${analysisResult.styles.colorAndTexture}`,
@@ -719,6 +797,67 @@ export default function App() {
                 </button>
               </div>
             )}
+
+            {/* Gemini API key (content analysis) */}
+            <div className="bg-[#12141A] border border-[#262936] rounded-xl p-5 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <KeyRound className="w-4 h-4 text-[#E2A03F]" />
+                  <h3 className="font-display text-sm font-bold text-[#F4F4F0]">
+                    Análisis de contenido (opcional)
+                  </h3>
+                </div>
+                <span
+                  className={`text-[10px] font-mono-tabular px-2 py-0.5 rounded border ${
+                    apiKey.trim()
+                      ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'
+                      : 'text-[#9499AD] border-[#262936] bg-[#191C26]'
+                  }`}
+                >
+                  {apiKey.trim() ? 'Conectado' : 'Sin clave'}
+                </span>
+              </div>
+              <p className="text-xs text-[#9499AD] leading-relaxed">
+                Añade tu clave de Google Gemini para que la app describa{' '}
+                <strong className="text-[#D5D8E2]">qué sucede</strong> en la imagen o el video
+                (sujeto, acción y entorno) y lo integre en el prompt. Sin clave solo se genera el
+                análisis técnico.
+              </p>
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type={showApiKey ? 'text' : 'password'}
+                    value={apiKey}
+                    onChange={(e) => handleApiKeyChange(e.target.value)}
+                    placeholder="Pega aquí tu API key de Gemini"
+                    spellCheck={false}
+                    autoComplete="off"
+                    className="w-full bg-[#0A0B0E] border border-[#262936] rounded-lg pl-3 pr-9 py-2.5 text-xs text-[#F4F4F0] placeholder-[#5A5F72] focus:outline-none focus:border-[#E2A03F] font-mono-tabular"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[#9499AD] hover:text-[#F4F4F0] cursor-pointer"
+                    title={showApiKey ? 'Ocultar clave' : 'Mostrar clave'}
+                  >
+                    {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <a
+                  href={GEMINI_KEY_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 px-3 py-2.5 text-xs font-medium text-[#E2A03F] hover:text-[#F59E0B] border border-[#262936] hover:border-[#E2A03F] rounded-lg flex items-center gap-1.5 transition-colors"
+                >
+                  Obtener clave
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              </div>
+              <p className="text-[10px] text-[#5A5F72] leading-relaxed">
+                La clave se guarda solo en tu navegador (localStorage) y viaja directamente a
+                Google. Nunca se envía a nuestros servidores.
+              </p>
+            </div>
           </div>
 
           {/* RIGHT COLUMN (7 Cols): Direct Output */}
@@ -740,6 +879,8 @@ export default function App() {
                   </p>
                 </div>
                 <div className="pt-2 flex flex-wrap items-center justify-center gap-3 text-xs text-[#9499AD] font-mono-tabular">
+                  <span>00. Contenido y Acción</span>
+                  <span aria-hidden="true">·</span>
                   <span>01. Prompt Google Flow (ES / EN)</span>
                   <span aria-hidden="true">·</span>
                   <span>02. Estilos Visuales</span>
@@ -853,6 +994,90 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+
+                {/* Content / Action (what happens) */}
+                {analysisResult.content &&
+                (analysisResult.content.descriptionEs ||
+                  analysisResult.content.action ||
+                  analysisResult.content.setting) ? (
+                  <div className="bg-[#12141A] border border-[#262936] rounded-xl p-6 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <ScanText className="w-4 h-4 text-[#E2A03F]" />
+                        <h3 className="font-display text-base font-bold text-[#F4F4F0]">
+                          00. Contenido y Acción — Qué sucede
+                        </h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleCopy(
+                            `${analysisResult.content?.descriptionEs}. ${
+                              analysisResult.content?.subjects?.length
+                                ? `Sujetos: ${analysisResult.content?.subjects.join(', ')}. `
+                                : ''
+                            }Acción: ${analysisResult.content?.action}. Entorno: ${
+                              analysisResult.content?.setting
+                            }.`,
+                            'copy-content'
+                          )
+                        }
+                        className="text-xs text-[#9499AD] hover:text-[#F4F4F0] flex items-center gap-1 cursor-pointer shrink-0"
+                      >
+                        {copiedId === 'copy-content' ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                        <span>{copiedId === 'copy-content' ? 'Copiado' : 'Copiar'}</span>
+                      </button>
+                    </div>
+
+                    <p className="text-sm text-[#F4F4F0] leading-relaxed">
+                      {analysisResult.content.descriptionEs}
+                    </p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 text-xs">
+                      <div className="space-y-1">
+                        <span className="text-[#9499AD] block">Acción principal</span>
+                        <p className="text-[#F4F4F0] font-medium leading-relaxed">
+                          {analysisResult.content.action}
+                        </p>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-[#9499AD] block">Entorno / Escenario</span>
+                        <p className="text-[#D5D8E2] leading-relaxed">
+                          {analysisResult.content.setting}
+                        </p>
+                      </div>
+                      {analysisResult.content.subjects &&
+                      analysisResult.content.subjects.length > 0 ? (
+                        <div className="space-y-1 md:col-span-2">
+                          <span className="text-[#9499AD] block">Sujetos y elementos</span>
+                          <div className="flex flex-wrap gap-1.5">
+                            {analysisResult.content.subjects.map((subject, index) => (
+                              <span
+                                key={`${subject}-${index}`}
+                                className="px-2 py-0.5 rounded bg-[#191C26] border border-[#262936] text-[#D5D8E2]"
+                              >
+                                {subject}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-[#12141A] border border-dashed border-[#262936] rounded-xl p-5 flex items-start gap-3">
+                    <KeyRound className="w-4 h-4 text-[#E2A03F] shrink-0 mt-0.5" />
+                    <p className="text-xs text-[#9499AD] leading-relaxed">
+                      Añade tu clave de Gemini en el panel izquierdo para que el prompt describa el{' '}
+                      <strong className="text-[#D5D8E2]">contenido real</strong> de la escena (qué
+                      ocurre en la imagen o el video) además de la técnica.
+                    </p>
+                  </div>
+                )}
 
                 {/* Technical Specifications: Styles, Lighting & Composition */}
                 <div
