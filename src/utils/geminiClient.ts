@@ -1,6 +1,14 @@
 import { AnalysisResult, MediaMetadata, MediaType } from '../types';
 
-const MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+interface GeminiModel {
+  name: string;
+  thinkingBudget?: number;
+}
+
+const MODELS: GeminiModel[] = [
+  { name: 'gemini-3.5-flash', thinkingBudget: 0 },
+  { name: 'gemini-flash-lite-latest' },
+];
 
 interface FramePart {
   base64: string;
@@ -143,21 +151,28 @@ export async function analyzeWithGemini(params: AnalyzeWithGeminiParams): Promis
   }
   parts.push({ text: buildInstruction(isVideo, durationText, resText) });
 
-  const requestBody = {
-    system_instruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-    contents: [{ role: 'user', parts }],
-    generationConfig: {
-      temperature: 0.5,
-      responseMimeType: 'application/json',
-      responseSchema,
-    },
+  const baseGenerationConfig = {
+    temperature: 0.5,
+    responseMimeType: 'application/json',
+    responseSchema,
   };
 
   let lastError: unknown = null;
 
   for (const model of MODELS) {
+    const generationConfig =
+      model.thinkingBudget === undefined
+        ? baseGenerationConfig
+        : { ...baseGenerationConfig, thinkingConfig: { thinkingBudget: model.thinkingBudget } };
+
+    const requestBody = {
+      system_instruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
+      contents: [{ role: 'user', parts }],
+      generationConfig,
+    };
+
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model.name}:generateContent`;
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -179,8 +194,8 @@ export async function analyzeWithGemini(params: AnalyzeWithGeminiParams): Promis
             'La clave de Gemini no es válida. Comprueba que la copiaste completa y sin espacios.'
           );
         }
-        if (response.status === 404) {
-          lastError = new Error(`El modelo "${model}" no está disponible con esta clave.`);
+        if (response.status === 404 || response.status === 400) {
+          lastError = new Error(`El modelo "${model.name}" no está disponible con esta clave.`);
           continue;
         }
         throw new Error(`Gemini respondió ${response.status}: ${text.slice(0, 200)}`);
